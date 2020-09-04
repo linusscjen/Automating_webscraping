@@ -1,0 +1,254 @@
+---
+title: "Automation - Henry"
+author: "Linus Jen"
+date: "8/24/2020"
+output: pdf_document
+---
+
+```{r Packages}
+# Scraping
+library(RSelenium)
+library(rvest)
+library(xml2)
+library(dplyr)
+library(stringr)
+
+# Excel stuff
+library(readxl)
+library(writexl)
+```
+
+### Cleaning the Excel File
+
+```{r, eval=FALSE, message=FALSE}
+# Save the file name, which may be changed for future runs
+filename = "INSERT FILE HERE.xlsx"
+
+# Pull the sheet "Combine Sheet"
+sheet = "Combine sheet"
+combined_sheet = read_excel(filename,
+                            sheet = sheet)[,3:7]
+
+# Ensure there aren't any null values
+for(i in 1:ncol(combined_sheet)) {
+  null_index = which(is.null(combined_sheet[[2]]))
+  combined_sheet[[i]][null_index] = NA
+}
+
+# Now, save the file
+write_xlsx(combined_sheet, "Empty_File.xlsx")
+```
+
+
+### Setting up the Server
+
+```{r Server}
+# Setting up a driver
+remDr = remoteDriver(port = 4445L,
+             browserName = "chrome",
+             version = "84.0.4147.135")
+
+remDr$open()
+remDr$getStatus()
+
+# Everything seems to be working!
+```
+
+### Accessing Website and Updating Values
+
+Loop over each Account No. Skip if NA or contains ??
+
+```{r}
+#Initialization
+
+# Pull our data in
+data = read_excel("Empty_File.xlsx")
+
+# Enter the URL to be searched
+remDr$navigate("https://naturalresources.gov.bz/index.php/track-instrument-2/")
+
+# Ensure that prior step works
+remDr$screenshot(display = TRUE)
+
+# Create an empty data frame to store the new values in, row by row
+full_data = data.frame()
+
+# Create an empty data frame to save all the clean data, by 100s
+# error_free = data.frame()
+
+# Check time, as 1226 records
+start = Sys.time()
+
+# Break the dataset into chunks of 100 rows
+n = nrow(data)
+grouping = n / 100
+
+# For sure, 1:600 are okay
+for(j in 1:grouping) {
+  # Start at 1, and increase by 200 for each loop
+  row_start = 1 + 100 * (j - 1)
+  
+  # End at intervals of 200
+  row_end = 100 * j
+  
+  # If our row end is greater than the number of rows, set it to the last row
+  if(row_end > n) row_end = n
+  
+  # Print j
+  print(j)
+  
+  # Create a data frame to store each chunk
+  chunk_data = data.frame()
+  
+  # Now, loop over our new intervals
+  
+  for(i in row_start:row_end) {
+    # Ensure that the value isn't blank or contains ??
+    if(is.na(data$`Account No.`[i]) | 
+       str_detect(data$`Account No.`[i], "\\?") |
+       i %in% c(616, 789)) {
+      # Print the row to cross reference
+      print(i)
+      
+      # Leave an empty row for the values
+      
+      updated_values = c(data$`Account No.`[i],
+                         data$`Parcel No.`[i],
+                         data$`Lot No.`[i],
+                         data$`Estate new lot #`[i],
+                         data$`Owner(s)`[i],
+                         NA,
+                         NA,
+                         NA)
+      
+      # Add the data to the bottom of the new data frame
+      chunk_data = rbind(chunk_data, updated_values)
+      
+      # Then skip to the next iteration
+      next
+    } else {
+      # Placement of rows before error, used for troubleshooting
+      print(i)
+      
+      # First, save the account no. as a variable
+      acct_no = data$`Account No.`[i]
+      
+      # Select the textbox to insert our codes into
+      textbox = remDr$findElement(using = "id", value = "ewd-otp-tracking-number")
+      
+      # Now, send text into it, and enter it
+      textbox$sendKeysToElement(list(acct_no, key = "enter"))
+      
+      # Ensure that prior step works
+      # remDr$screenshot(display = TRUE)
+      
+     # Now, pull out all the values
+      # First, we will pull out the note
+      fulltext = read_html(remDr$getPageSource()[[1]]) %>% 
+        html_nodes("#ewd-otp-order-notes .ewd-otp-bottom-align") %>% 
+        html_text()
+      
+      # Then, pull out the principal balance, interest balance, and total balance
+      principal_bal = fulltext %>% str_extract("Principal Balance:\\s\\(?\\$(\\d+,?)+\\.\\d+") %>% 
+        str_remove_all(",") %>% 
+        str_extract("\\d*\\.\\d+") %>% 
+        str_trim() %>% 
+        as.numeric()
+      
+      interest_bal = fulltext %>% str_extract("Interest Balance:\\s\\(?\\$(\\d+,?)+\\.\\d+") %>% 
+        str_remove_all(",") %>% 
+        str_extract("\\d*\\.\\d+") %>% 
+        str_trim() %>% 
+        as.numeric()
+      
+      full_bal = fulltext %>% str_extract("Total Balance:\\s\\(?\\$(\\d+,?)+\\.\\d+") %>% 
+        str_remove_all(",") %>% 
+        str_extract("\\d*\\.\\d+") %>% str_trim() %>% as.numeric()
+      
+       # Create a sign variable to check if values are positive or negative
+      prin_sign = F; int_sign = F; full_sign = F
+      
+      # Now, if the values exist, we check if they are positive or negative
+      if(!is.na(principal_bal)) {
+        prin_sign = fulltext %>% 
+          str_extract("Principal Balance:\\s\\(?\\$(\\d+,?)+\\.\\d+") %>% 
+          str_detect("\\(")
+      
+        if(prin_sign == TRUE) principal_bal = principal_bal * -1
+      } else {
+        # If there isn't a value, store it as 0
+        principal_bal = 0
+      }
+      
+      # Repeat process for interest balance
+      if(!is.na(interest_bal)) {
+        int_sign = fulltext %>% 
+          str_extract("Interest Balance:\\s\\(?\\$(\\d+,?)+\\.\\d+") %>% 
+          str_detect("\\(")
+      
+        if(int_sign == TRUE) interest_bal = interest_bal * -1
+      } else {
+        interest_bal = 0
+      }
+      
+      # Repeat process for full balance
+      if(!is.na(full_bal)) {
+        full_sign = fulltext %>% 
+          str_extract("Total Balance:\\s\\(?\\$(\\d+,?)+\\.\\d+") %>% 
+          str_detect("\\(")
+        
+        if(full_sign == TRUE) full_bal = full_bal * -1
+      } else {
+        full_bal = 0
+      }
+      
+      
+      # Ensure that the values, when added together, are correct
+      if(round(principal_bal + interest_bal, 2) != round(full_bal, 2)) {
+        print(principal_bal + interest_bal)
+        print(full_bal)
+        print(paste("Error on row ", i, "; Account No. ", acct_no, sep = ""))
+      }
+      
+      # Create our vector of values
+      updated_values = c(data$`Account No.`[i],
+                         data$`Parcel No.`[i],
+                         data$`Lot No.`[i],
+                         data$`Estate new lot #`[i],
+                         data$`Owner(s)`[i],
+                         principal_bal,
+                         interest_bal,
+                         full_bal)
+      
+      # Add the data to the bottom of the new data frame
+      chunk_data = rbind(chunk_data, updated_values)
+    }
+  }
+  # Fix the headers of chunk_data so that they match
+  names(chunk_data) = c(names(data), "Principal Balance", "Interest Balance", "Full Balance")
+  
+  # Save each hundred columns into a new dataframe error_free
+  error_free = rbind(error_free, chunk_data)
+  
+  # Save as an .xlsx file (saves every 100 rows, in case the container crashes, or there are any issues)
+  write_xlsx(error_free, "full_data.xlsx")
+}
+
+error_free = full_data
+
+# Save end time, and see run time for x rows
+end = Sys.time()
+end - start
+
+# Fix the column headers
+names(error_free) = c(names(data), "Principal Balance", "Interest Balance", "Full Balance")
+
+# Ensure that everything works
+full_data
+
+# Note that we don't need to save the file
+```
+
+
+
+
