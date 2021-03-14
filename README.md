@@ -1,7 +1,7 @@
 # Automating_webscraping
 A small project done for my dad. Longest part was setting up the container with Docker.
 
-RSelenium, rvest, and xml2 were used to webscrape from [this website](https://naturalresources.gov.bz/index.php/track-instrument-2/).
+RSelenium, rvest, and xml2 were used to webscrape from an online website database.
 
 Unfortunately, due to the nature of his work, account numbers and the data given and saved cannot be given in this project. However, following the code should be simple enough, but principal, interest, and total balances were pulled for each account number.
 
